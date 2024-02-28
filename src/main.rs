@@ -1,7 +1,7 @@
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::fs;
+use std::{fs, path};
 use std::io::{self, stdin, stdout, BufRead, Stdin, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -75,6 +75,7 @@ fn merge(ids: &Vec<u32>, pair:&(u32, u32), idx:&u32) -> Vec<u32>{
     return newids;
 }
 
+#[derive(Debug)]
 struct BasicTokenizer {
     trained: bool,
     vocab_size: u32,
@@ -209,7 +210,8 @@ fn usage() -> String {
     return "commands:
     \t[e|enc|encode] ./path.txt (in)
     \t[d|dec|decode] ./path.ids (in)
-    \t[t|tr|train] ./path.txt (in)".to_string();
+    \t[t|tr|train] ./path.txt (in)
+    \t[p|pr|print]".to_string();
 }
 
 fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
@@ -219,85 +221,105 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
     stdin.lock().read_line(&mut line).unwrap();
 
     match parse_line(&line) {
-        Ok((cmd, path)) => {
-            match cmd {
-                REPLCommand::Decode => {
-                    match (*model).borrow().as_ref() {
-                        Some(tokenizer) => {
-                            if let Ok(text) = fs::read_to_string(&path) {
-                                let ids = text.split(',').map(|number|{ number.parse::<u32>().unwrap()}).collect();
-                                let result = tokenizer.decode(ids);
-                                println!("result:\n\t{}",result);
-                            } else {
-                              print!("Couldn't read file at {:?}", path);  
-                            }
-                        }
-                        None => {
-                            println!("Model is not initialized, train or load first")
-                        }
-                    }
-                },
-                REPLCommand::Encode => {
-                    match (*model).borrow().as_ref() {
-                        Some(ref tokenizer) => {
-                            if let Ok(text) = fs::read_to_string(&path) {
-                                let result = tokenizer.encode(&text);
-                                println!("result:\n\t{:?}",result);
-                            } else {
-                              print!("Couldn't read file at {:?}", path);  
-                            }                }
-                        None => {
-                            println!("Model is not initialized, train or load first")
-                        }
-                    }
-                },
-                REPLCommand::Train => {
+        Ok(REPLCommand::Decode(path)) => {
+            match (*model).borrow().as_ref() {
+                Some(tokenizer) => {
                     if let Ok(text) = fs::read_to_string(&path) {
-                        let result = BasicTokenizer::train(&text, 512, Some(true));
-                        println!("result:\nmerges: {:?}\nvocab: {:?}", result.merges, result.vocab);
-                        *(*model).borrow_mut() = Some(result);
+                        let ids = text.split(',').map(|number|{ number.parse::<u32>().unwrap()}).collect();
+                        let result = tokenizer.decode(ids);
+                        println!("result:\n\t{}",result);
                     } else {
-                      println!("Couldn't read file at {:?}", path);  
+                        print!("Couldn't read file at {:?}", path);  
                     }
-                },
+                }
+                None => {
+                    println!("Model is not initialized, train or load first")
+                }
             }
-        
+        },
+        Ok(REPLCommand::Encode(path)) => {
+            match (*model).borrow().as_ref() {
+                Some(tokenizer) => {
+                    if let Ok(text) = fs::read_to_string(&path) {
+                        let result = tokenizer.encode(&text);
+                        println!("result:\n\t{:?}",result);
+                    } else {
+                        print!("Couldn't read file at {:?}", path);  
+                    }                }
+                None => {
+                    println!("Model is not initialized, train or load first")
+                }
+            }
+        },
+        Ok(REPLCommand::Train(path)) => {
+            if let Ok(text) = fs::read_to_string(&path) {
+                let result = BasicTokenizer::train(&text, 512, Some(true));
+                println!("result:\nmerges: {:?}\nvocab: {:?}", result.merges, result.vocab);
+                *(*model).borrow_mut() = Some(result);
+            } else {
+                println!("Couldn't read file at {:?}", path);  
+            }
+        },
+        Ok(REPLCommand::Print()) => {
+            match (*model).borrow().as_ref() {
+                Some(tokenizer) => {
+                    println!("model:\n{:?}",tokenizer);
+                },
+                None => {
+                    println!("Model is not initialized, train or load first")
+                }
+            }
         },
         Err(err) => {
             println!("{}",err)
         }
     }
 }
+        
 
-fn parse_line(line:&str) -> Result<(REPLCommand, PathBuf), String>{
-    let cmd; let pathstr;
-    match line.split_once(' ') {
-        Some(args) => {(cmd, pathstr) = (args.0.to_owned(), args.1.to_owned());},
-        None => {return Err(format!("Not enough arguments, expected 2 or more, got: {}", line))}
-    }
 
-    let path = Path::new(pathstr.as_str().trim());
+fn parse_line(line:&str) -> Result<REPLCommand, String>{
+    let args:Vec<&str> = line.split_whitespace().collect();
+
     // if !path.is_file(){
-    //     return Err(format!("Parsed path isn't a file: {}\n\t{}", path.to_str().unwrap_or(""), path.));
-    // }
-
-    match cmd.as_str() {
-        "e"|"enc"|"encode" => {
-            return Ok((REPLCommand::Encode, path.to_owned()))
-        },
-        "d"|"dec"|"decode" => {
-            return Ok((REPLCommand::Decode, path.to_owned()))
-        },
-        "t"|"tr"|"train" => {
-            return Ok((REPLCommand::Train, path.to_owned()))
-        }
-        _ => {
-            return Err(format!("Couldn't parse \"{}\" into a command, expected: {}", cmd.as_str(), usage()))
-        }
+        //     return Err(format!("Parsed path isn't a file: {}\n\t{}", path.to_str().unwrap_or(""), path.));
+        // }
+        
+        match args[0] {
+            "e"|"enc"|"encode" => {
+                if let Some(path) = args.get(1){
+                   return Ok(REPLCommand::Encode(Path::new(path.trim()).to_owned()))
+                } else {
+                   return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+                }
+            },
+            "d"|"dec"|"decode" => {
+                if let Some(path) = args.get(1){
+                    return Ok(REPLCommand::Decode(Path::new(path.trim()).to_owned()))
+                } else {
+                    return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+                }
+             },
+            "t"|"tr"|"train" => {
+                if let Some(path) = args.get(1){
+                    return Ok(REPLCommand::Train(Path::new(path.trim()).to_owned()))
+                } else {
+                    return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+                }
+             }
+            "p"|"pr"|"print" => {
+                return Ok(REPLCommand::Print())
+            },
+            _ => {
+                return Err(format!("Couldn't parse \"{}\" into a command, expected: {}", args[0], usage()))
+            }
     }
 
 }
 
 enum REPLCommand  {
-    Encode,Decode,Train
+    Encode(PathBuf),
+    Decode(PathBuf),
+    Train(PathBuf),
+    Print()
 }
