@@ -1,5 +1,6 @@
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
+use std::char::REPLACEMENT_CHARACTER;
 use std::ffi::OsString;
 use std::{fs, path};
 use std::io::{self, stdin, stdout, BufRead, Stdin, Write};
@@ -71,7 +72,6 @@ fn merge(ids: &Vec<u32>, pair:&(u32, u32), idx:&u32) -> Vec<u32>{
           i +=1;  
         }
     }
-
     return newids;
 }
 
@@ -82,7 +82,7 @@ struct BasicTokenizer {
     num_merges: u32,
 
     merges: HashMap<(u32,u32),u32>,
-    vocab: HashMap<u32, Vec<u8>>
+    vocab: HashMap<u32, Vec<u32>>
     //vocab: HashMap<u32, String>
 }
 
@@ -94,13 +94,13 @@ impl BasicTokenizer {
         let num_merges = vocab_size - 256;
 
         let mut merges: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut vocab: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut vocab: HashMap<u32, Vec<u32>> = HashMap::new();
 
         let mut ids:Vec<u32> = text.chars().map(u32::from).collect();
 
         //endianness??
         for idx in 0..256 {
-            vocab.insert(idx, idx.to_le_bytes().to_vec());  
+            vocab.insert(idx, vec![idx]);  
         }
 
         for i in 0..num_merges{
@@ -145,8 +145,11 @@ impl BasicTokenizer {
             let word = self.vocab.get(&id).unwrap().clone();
             text_bytes = [text_bytes, word].concat();
         }
-        let text = String::from_utf8(text_bytes).unwrap();
-        return text
+        let text8:String = text_bytes.iter().map(|x|{
+            return char::from_u32(x.to_owned()).unwrap().to_string();
+        }).collect();
+        //let text = String::from_utf8_lossy(text8).into_owned();
+        return text8
     }
 
     fn encode(&self, text:&String) -> Vec<u32> {
@@ -225,9 +228,18 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
             match (*model).borrow().as_ref() {
                 Some(tokenizer) => {
                     if let Ok(text) = fs::read_to_string(&path) {
-                        let ids = text.split(',').map(|number|{ number.parse::<u32>().unwrap()}).collect();
-                        let result = tokenizer.decode(ids);
-                        println!("result:\n\t{}",result);
+                        let ids: Result<Vec<u32>, String> = text.split(',').map(|number|match number.parse::<u32>(){
+                            Ok(o) => {return Ok(o)},
+                            Err(err) => {Err(format!("Couldn't parse the file for ids. Expected format is comma seperated numbers 1,2,3,4,... instead got: {}", number))},
+                        }).collect();
+                        match ids {
+                            Ok(o) => {
+                                //let ids = text.split(',').map(|number|match number.parse::<u32>()?{}).collect();
+                                let result = tokenizer.decode(o);
+                                println!("result:\n\t{}",result);
+                            }
+                            Err(e) => return,
+                        }
                     } else {
                         print!("Couldn't read file at {:?}", path);  
                     }
