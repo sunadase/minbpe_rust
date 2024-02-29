@@ -1,7 +1,9 @@
+use core::fmt;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
 use std::char::REPLACEMENT_CHARACTER;
 use std::ffi::OsString;
+use std::fmt::write;
 use std::{fs, path};
 use std::io::{self, stdin, stdout, BufRead, Stdin, Write};
 use std::path::PathBuf;
@@ -181,6 +183,25 @@ impl BasicTokenizer {
     }
 }
 
+impl fmt::Display for BasicTokenizer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = Vec::new();
+        write!(out,"BasicTokenizer:\n\t   trained: {}\n\tvocab_size: {}\n\tnum_merges: {}\n\tmerges:\n",self.trained,self.vocab_size,self.num_merges).unwrap();
+
+        for elem in self.merges.borrow(){
+            write!(out, "\t\t({:4},{:4}) -> {}\n", elem.0.0, elem.0.1, elem.1).unwrap();
+        }
+
+        write!(out,"\tvocab:\n", ).unwrap();
+
+        for voc in self.vocab.borrow(){
+            write!(out, "\t\t{:<4} : {:?}\n", voc.0, voc.1).unwrap()
+        }
+
+        return write!(f, "{}", String::from_utf8(out).unwrap());
+    }
+}
+
 
 // todo 
 //    cli argparse:
@@ -188,9 +209,10 @@ impl BasicTokenizer {
 //          usg: ./app -d ./path.ids -m ./path.model -o ./path.txt(default stdout)
 //          usg: ./app -t ./path.txt -o ./path.txt(default stdout)
 // todo
-//    repl: [e|enc|encode] ./path.txt (in)
-//          [d|dec|decode] ./path.ids (in)
+//    repl: [e|enc|encode] ./path.txt (in) ([-o|o|out|output] ./out.ids)
+//          [d|dec|decode] ./path.ids (in) ([-o|o|out|output] ./out.txt)
 //          [t|tr|train] ./path.txt (in)
+//          [p|pr|print] 
 //          missing fn load [l|ld|load] ./path.model (in)
 //          missing fn save [s|sv|save] ./path.model (out)
 
@@ -278,7 +300,7 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
         Ok(REPLCommand::Print()) => {
             match (*model).borrow().as_ref() {
                 Some(tokenizer) => {
-                    println!("model:\n{:?}",tokenizer);
+                    println!("model:\n{}",tokenizer);
                 },
                 None => {
                     println!("Model is not initialized, train or load first")
