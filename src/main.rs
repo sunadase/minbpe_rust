@@ -230,7 +230,7 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
                     if let Ok(text) = fs::read_to_string(&path) {
                         let ids: Result<Vec<u32>, String> = text.split(',').map(|number|match number.parse::<u32>(){
                             Ok(o) => {return Ok(o)},
-                            Err(err) => {Err(format!("Couldn't parse the file for ids. Expected format is comma seperated numbers 1,2,3,4,... instead got: {}", number))},
+                            Err(err) => {Err(format!("Couldn't parse the file for ids. Expected format is comma seperated numbers: 1,2,3,4,... instead got: {}", number))},
                         }).collect();
                         match ids {
                             Ok(o) => {
@@ -238,7 +238,10 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
                                 let result = tokenizer.decode(o);
                                 println!("result:\n\t{}",result);
                             }
-                            Err(e) => return,
+                            Err(e) => {
+                                println!("{}",e);
+                                return;
+                            },
                         }
                     } else {
                         print!("Couldn't read file at {:?}", path);  
