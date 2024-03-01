@@ -7,13 +7,13 @@ made in order to practice rust i wouldnt imagine it to be following best practic
 
 #### todo: 
 
- - [ ] BasicTokenizer
+ - [x] BasicTokenizer
     - [x] train
     - [x] encode
     - [x] decode
-    - [ ] save
-    - [ ] load
-    - [ ] vocab type shud be u32;2?
+    - [x] save
+    - [x] load
+    - [x] vocab type shud be vec u32?
  - [x] REPL <- (next)
     - [ ] correct prints/whitespaces
  - [ ] CLI

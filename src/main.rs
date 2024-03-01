@@ -2,10 +2,12 @@ use core::fmt;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
 use std::char::REPLACEMENT_CHARACTER;
+use std::env::args;
 use std::ffi::OsString;
-use std::fmt::write;
+use std::fmt::format;
+use std::num::ParseIntError;
 use std::{fs, path};
-use std::io::{self, stdin, stdout, BufRead, Stdin, Write};
+use std::io::{self, stdin, stdout, BufRead, Error, Stdin, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::str::Bytes;
@@ -171,12 +173,73 @@ impl BasicTokenizer {
         }
         return ids
     }
-    
-    fn save(&self, path:&Path) -> Result<(), String> {
-        todo!()
+
+    // format: split by lines 
+    // vocab size
+    // num_merges
+    // merges seperated by ' ' then ',' first two -> 3rd
+    // vocab seperated by ' ' then ',' first -> rest
+    fn save(&self, path:&Path) -> Result<(), io::Error> {
+        let mut model = String::new();
+        model.push_str(format!("{}\n", self.vocab_size).as_str());
+        model.push_str(format!("{}\n", self.num_merges).as_str());
+        for merge in self.merges.borrow() {            
+            model.push_str(format!("{},{},{} ", merge.0.0, merge.0.1, merge.1).as_str());
+        }
+        model.push('\n');
+        for voc in self.vocab.borrow() {
+            model.push_str(format!("{}", voc.0).as_str());
+            for x in voc.1 {
+                model.push_str(format!(",{}", x).as_str());
+            }
+            model.push(' ');
+        }
+//        model.push_str(format!("{:?}\n", self.merges).as_str());
+//        model.push_str(format!("{:?}\n", self.vocab).as_str());
+
+        println!("writing model as:\n{}", model);
+
+        return fs::write(path, model);
     }
-    fn load(&self, path:&Path) -> Result<Self, String> {
-        todo!()
+
+    fn load(path:&Path) -> Result<Self, String> {
+        if let Ok(text) = fs::read_to_string(&path) {
+            let lines:Vec<&str> = text.split('\n').collect();
+            let vocab_size = lines.get(0).unwrap().parse::<u32>().unwrap();
+            let num_merges = lines.get(1).unwrap().parse::<u32>().unwrap();
+            let mut new_merges: HashMap<(u32,u32), u32> = HashMap::new(); 
+            for merge in lines.get(2).unwrap().split(' '){
+                let mut elems = merge.split(',');
+                if let Ok(a) = elems.next().unwrap().parse::<u32>(){
+                    if let Ok(b) = elems.next().unwrap().parse::<u32>(){
+                        if let Ok(c) = elems.next().unwrap().parse::<u32>(){
+                            //println!("parsed merge ({},{}) -> {}", a,b,c);
+                            new_merges.insert((a,b), c);
+                        } else { break; }                            
+                    } else { break; }
+                } else { break; }
+            }
+            let mut new_vocab: HashMap<u32, Vec<u32>> = HashMap::new();
+            for voc in lines.get(3).unwrap().split(' '){
+                let mut elems = voc.split(',');
+                if let Ok(a) = elems.next().unwrap().parse::<u32>(){
+                    let rv: Vec<Result<u32, String>> = elems
+                    .map(|el|
+                        match el.parse::<u32>(){
+                            Ok(o) => {return Ok(o)},
+                            Err(e) => {return Err(format!("Error parsing vocab ids: {}", el))}
+                        })
+                    .collect();
+                    let v = rv.iter().map(|f|f.to_owned().unwrap()).collect();
+                    //println!("parsed vocab {}, {:#?}",a,v);
+                    new_vocab.insert(a, v);
+                } else { break; }
+            }
+            return Ok(BasicTokenizer{vocab_size, trained:true, num_merges, merges:new_merges, vocab:new_vocab});
+        }else {
+            return Err(format!("Failed reading model from path: {}", path.to_str().unwrap()));
+        }
+
     }
     fn load_mut(&mut self, path:&Path) -> Result<(), String> { 
         todo!()
@@ -217,25 +280,30 @@ impl fmt::Display for BasicTokenizer {
 //          missing fn save [s|sv|save] ./path.model (out)
 
 fn main() {
-    println!("{}", usage());
+    let args:Vec<String> = args().collect();
+    println!("Got args: {:?}", args);
+
+    println!("repl usage: \n\t{}", usage());
 
     let model:Rc<RefCell<Option<BasicTokenizer>>> = Rc::new(RefCell::new(Option::None));
     let stdin = stdin();
 
+    //TODO: use
     let not_exit = true;
     while not_exit{
-
         get_cmd(&stdin, model.clone())
     }
 
-
 }
+
 //ugly
 fn usage() -> String {
     return "commands:
     \t[e|enc|encode] ./path.txt (in)
     \t[d|dec|decode] ./path.ids (in)
     \t[t|tr|train] ./path.txt (in)
+    \t[l|ld|load] ./path.model (in)
+    \t[s|sv|save] ./path.model (out)
     \t[p|pr|print]".to_string();
 }
 
@@ -307,6 +375,29 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
                 }
             }
         },
+        Ok(REPLCommand::Save(path)) => {
+            match (*model).borrow().as_ref() {
+                Some(tokenizer) => {
+                    println!("Writing model to path: {}\n", path.to_str().unwrap());
+                    match tokenizer.save(&path) {
+                        Ok(_) => {},
+                        Err(e) => {println!("Failed writing with: {}", e)}   
+                    }
+                },
+                None => {
+                    println!("Model is not initialized, train or load first")
+                }
+            }
+        },
+        Ok(REPLCommand::Load(path)) => {
+            println!("Loading model from path: {}\n", path.to_str().unwrap());
+            match BasicTokenizer::load(&path) {
+                Ok(new_tok) => {
+                    *(*model).borrow_mut() = Some(new_tok);
+                },
+                Err(e) => {println!("Failed loading with: {}", e)}   
+            }
+        },
         Err(err) => {
             println!("{}",err)
         }
@@ -319,44 +410,59 @@ fn parse_line(line:&str) -> Result<REPLCommand, String>{
     let args:Vec<&str> = line.split_whitespace().collect();
 
     // if !path.is_file(){
-        //     return Err(format!("Parsed path isn't a file: {}\n\t{}", path.to_str().unwrap_or(""), path.));
-        // }
+    //     return Err(format!("Parsed path isn't a file: {}\n\t{}", path.to_str().unwrap_or(""), path.));
+    // }
         
-        match args[0] {
-            "e"|"enc"|"encode" => {
-                if let Some(path) = args.get(1){
-                   return Ok(REPLCommand::Encode(Path::new(path.trim()).to_owned()))
-                } else {
-                   return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
-                }
-            },
-            "d"|"dec"|"decode" => {
-                if let Some(path) = args.get(1){
-                    return Ok(REPLCommand::Decode(Path::new(path.trim()).to_owned()))
-                } else {
-                    return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
-                }
-             },
-            "t"|"tr"|"train" => {
-                if let Some(path) = args.get(1){
-                    return Ok(REPLCommand::Train(Path::new(path.trim()).to_owned()))
-                } else {
-                    return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
-                }
-             }
-            "p"|"pr"|"print" => {
-                return Ok(REPLCommand::Print())
-            },
-            _ => {
-                return Err(format!("Couldn't parse \"{}\" into a command, expected: {}", args[0], usage()))
+    match args[0] {
+        "e"|"enc"|"encode" => {
+            if let Some(path) = args.get(1){
+                return Ok(REPLCommand::Encode(Path::new(path.trim()).to_owned()))
+            } else {
+                return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
             }
+        },
+        "d"|"dec"|"decode" => {
+            if let Some(path) = args.get(1){
+                return Ok(REPLCommand::Decode(Path::new(path.trim()).to_owned()))
+            } else {
+                return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+            }
+            },
+        "t"|"tr"|"train" => {
+            if let Some(path) = args.get(1){
+                return Ok(REPLCommand::Train(Path::new(path.trim()).to_owned()))
+            } else {
+                return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+            }
+            }
+        "p"|"pr"|"print" => {
+            return Ok(REPLCommand::Print())
+        },
+        "s"|"sv"|"save" => {
+            if let Some(path) = args.get(1){
+                return Ok(REPLCommand::Save(Path::new(path.trim()).to_owned()))
+            } else {
+                return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+            }                
+        },
+        "l"|"ld"|"load" => {
+            if let Some(path) = args.get(1){
+                return Ok(REPLCommand::Load(Path::new(path.trim()).to_owned()))
+            } else {
+                return Err(format!("Not enough arguments for command {:?}\n{}", args, usage()))
+            }                
+        },
+        _ => {
+            return Err(format!("Couldn't parse \"{}\" into a command, expected: {}", args[0], usage()))
+        }
     }
-
 }
 
 enum REPLCommand  {
     Encode(PathBuf),
     Decode(PathBuf),
     Train(PathBuf),
-    Print()
+    Print(),
+    Save(PathBuf),
+    Load(PathBuf)
 }
