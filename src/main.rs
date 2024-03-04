@@ -3,11 +3,13 @@ use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
 use std::char::REPLACEMENT_CHARACTER;
 use std::env::args;
+use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::format;
+use std::fs::read_to_string;
 use std::num::ParseIntError;
 use std::{fs, path};
-use std::io::{self, stdin, stdout, BufRead, Error, Stdin, Write};
+use std::io::{self, stdin, stdout, BufRead, Stdin, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::str::Bytes;
@@ -158,18 +160,27 @@ impl BasicTokenizer {
 
     fn encode(&self, text:&String) -> Vec<u32> {
         let mut ids:Vec<u32> = text.chars().map(u32::from).collect();
+        // println!("--- ids: {:?}", ids);
         while ids.len() >= 2 {
             let pair;
             {
-            let stats = frequent_pair(ids.as_slice(), 1, Ordering::Ascending);
-            pair = (stats.first().unwrap().1.0.clone(), stats.first().unwrap().1.1.clone());
+                //changed from lowest to highest as in decode seems to work? why? minbpe takes the lowest or the first pair?
+                //TODO: do we need min inf, is it possible that theres no pair?
+                let stats = frequent_pair(ids.as_slice(), 1, Ordering::Descending);
+                pair = (stats.first().unwrap().1.0.clone(), stats.first().unwrap().1.1.clone());
+                // println!("got pair {:?}", pair);
             }
             if !self.merges.contains_key(&pair){
+                // println!("merges dont contain pair: {:?}", pair);
+                // println!("merges: {:?}", self.merges);
                 break;
             }
             let idx = self.merges.get(&pair).unwrap();
+            // println!("mapping {:?} -> {}", pair, idx);
+            
+            // println!("pre ids: {:?}", ids);
             ids = merge(&ids, &pair, &idx);
-
+            // println!("new ids: {:?}", ids);
         }
         return ids
     }
@@ -200,6 +211,25 @@ impl BasicTokenizer {
         println!("writing model as:\n{}", model);
 
         return fs::write(path, model);
+    }
+
+    fn save_str(&self) -> String {
+        let mut model = String::new();
+        model.push_str(format!("{}\n", self.vocab_size).as_str());
+        model.push_str(format!("{}\n", self.num_merges).as_str());
+        for merge in self.merges.borrow() {            
+            model.push_str(format!("{},{},{} ", merge.0.0, merge.0.1, merge.1).as_str());
+        }
+        model.push('\n');
+        for voc in self.vocab.borrow() {
+            model.push_str(format!("{}", voc.0).as_str());
+            for x in voc.1 {
+                model.push_str(format!(",{}", x).as_str());
+            }
+            model.push(' ');
+        }
+
+        return model;
     }
 
     fn load(path:&Path) -> Result<Self, String> {
@@ -265,34 +295,197 @@ impl fmt::Display for BasicTokenizer {
     }
 }
 
+fn cli_parse(args:Vec<String>) -> Result<CLICommand, String>{
+    if let Some(cmd) = args.get(1){
+        let mut skip_dash = 0;
+        for ch in cmd.chars() {
+            if ch == '-' {
+                skip_dash += 1;
+            } else {
+                break
+            }
+        }
+
+        match &cmd[skip_dash..] {
+            "e"|"enc"|"encode" => {
+                match (args.get(2), args.get(3), args.get(4)) {
+                    (Some(text_path), Some(model_path), Some(output_path)) => {
+                        return Ok(CLICommand::Encode(Path::new(text_path).to_owned(), Path::new(model_path).to_owned(), Some(Path::new(output_path).to_owned())))
+                    },
+                    (Some(text_path), Some(model_path), None) => {
+                        return Ok(CLICommand::Encode(Path::new(text_path).to_owned(), Path::new(model_path).to_owned(), None))
+                    }, 
+                    _ => {
+                        return Err(format!("Failed to parse arguments for cmd: {}", cmd))
+                    }
+                }
+            },
+            "d"|"dec"|"decode" => {
+                match (args.get(2), args.get(3), args.get(4)) {
+                    (Some(text_path), Some(model_path), Some(output_path)) => {
+                        return Ok(CLICommand::Decode(Path::new(text_path).to_owned(), Path::new(model_path).to_owned(), Some(Path::new(output_path).to_owned())))
+                    },
+                    (Some(text_path), Some(model_path), None) => {
+                        return Ok(CLICommand::Decode(Path::new(text_path).to_owned(), Path::new(model_path).to_owned(), None))
+                    }, 
+                    _ => {
+                        return Err(format!("Failed to parse arguments for cmd: {}", cmd))
+                    }
+                }
+            },
+            "t"|"tr"|"train" => {
+                match (args.get(2), args.get(3)) {
+                    (Some(text_path), Some(output_path)) => {
+                        return Ok(CLICommand::Train(Path::new(text_path).to_owned(), Some(Path::new(output_path).to_owned())))
+                    },
+                    (Some(text_path), None) => {
+                        return Ok(CLICommand::Train(Path::new(text_path).to_owned(), None))
+                    }, 
+                    _ => {
+                        return Err(format!("Failed to parse arguments for cmd: {}", cmd))
+                    }
+                }
+            },
+            _ => {
+                return Err(format!("Failed to parse cmd: {} as a cli command.", cmd));
+            }
+        }
+    } else {
+        return Ok(CLICommand::REPL());
+    }
+}
 
 // todo 
 //    cli argparse:
-//          usg: ./app -e ./path.txt -m ./path.model -o ./path.ids(default stdout)
-//          usg: ./app -d ./path.ids -m ./path.model -o ./path.txt(default stdout)
-//          usg: ./app -t ./path.txt -o ./path.txt(default stdout)
+//          accept options with - and -- as well by simply ignoring starting dashes
+//          ./app [-e|e|enc|encode] ./path.txt ./path.model ./path.ids(default stdout)
+//          ./app [-d|d|dec|decode] ./path.ids ./path.model ./path.txt(default stdout)
+//          ./app [-t|t|tr|train] ./path.txt ./path.model(default stdout)
+//       not implemented
+//          ./app [-e|e|enc|encode] ./path.txt [-m|m|mod|model] ./path.model ?([-o|o|out|output] ./path.ids(default stdout))
+//          ./app [-d|d|dec|decode] ./path.ids [-m|m|mod|model] ./path.model ?([-o|o|out|output] ./path.txt(default stdout))
+//          ./app [-t|t|tr|train] ./path.txt ?([-o|o|out|output] ./path.model(default stdout))
 // todo
-//    repl: [e|enc|encode] ./path.txt (in) ([-o|o|out|output] ./out.ids)
-//          [d|dec|decode] ./path.ids (in) ([-o|o|out|output] ./out.txt)
+//    repl: [e|enc|encode] ./path.txt (in) ?([-o|o|out|output] ./out.ids)
+//          [d|dec|decode] ./path.ids (in) ?([-o|o|out|output] ./out.txt)
 //          [t|tr|train] ./path.txt (in)
 //          [p|pr|print] 
-//          missing fn load [l|ld|load] ./path.model (in)
-//          missing fn save [s|sv|save] ./path.model (out)
+//          [l|ld|load] ./path.model (in)
+//          [s|sv|save] ./path.model (out)
 
 fn main() {
     let args:Vec<String> = args().collect();
     println!("Got args: {:?}", args);
 
-    println!("repl usage: \n\t{}", usage());
+    let cli = cli_parse(args);
+    match cli {
+        Ok(CLICommand::Decode(text_path, model_path, output_path)) => {
+            match BasicTokenizer::load(&model_path.as_path()){
+                Ok(model)=>{
+                    //TODO: move to its own function, repeats in repl as well
+                    if let Ok(text) = fs::read_to_string(&text_path) {
+                        let ids: Result<Vec<u32>, String> = text.split(',').map(|number|match number.parse::<u32>(){
+                            Ok(o) => {return Ok(o)},
+                            Err(err) => {Err(format!("Couldn't parse the file for ids with err: {}. Expected format is comma seperated numbers: 1,2,3,4,... instead got: {}", err, number))},
+                        }).collect();
+                        match ids {
+                            Ok(o) => {
+                                //let ids = text.split(',').map(|number|match number.parse::<u32>()?{}).collect();
+                                let result = model.decode(o);
 
-    let model:Rc<RefCell<Option<BasicTokenizer>>> = Rc::new(RefCell::new(Option::None));
-    let stdin = stdin();
+                                if let Some(output) = output_path {
+                                    match fs::write(&output, result){
+                                        Ok(_) => {},
+                                        Err(e) => {println!("Failed writing to output path: {}, with {}",output.to_str().unwrap_or("?"), e);}
+                                    }
+                                } else {
+                                    println!("{}",result);
+                                } 
+                            }
+                            Err(e) => {
+                                println!("{}",e);
+                                return;
+                            },
+                        }
+                    } else {
+                        print!("Couldn't read file at {:?}", text_path);  
+                    }
+                },
+                Err(e)=>{
+                    println!("Failed loading the model at {}, with: {}", model_path.to_str().unwrap_or("?"), e);
+                }
+            }
+        },
+        Ok(CLICommand::Encode(text_path, model_path, output_path)) => {
+            match BasicTokenizer::load(&model_path.as_path()){
+                Ok(model)=>{
+                    match fs::read_to_string(&text_path) {
+                        Ok(text) => {
+                            let result = model.encode(&text);
+                            match output_path {
+                                Some(output_p) => {
+                                    let mut output: String = "".to_string();
+                                    for r in result {
+                                        output.push_str(format!("{},",r).as_str())
+                                    }
+                                    output.pop();
+                                    match fs::write(&output_p, output){
+                                        Ok(_) => {},
+                                        Err(e) => {println!("Failed writing to output at {}, with {}", output_p.to_str().unwrap_or("?"), e)}
+                                    }
+                                },
+                                None => {
+                                    let mut output: String = "".to_string();
+                                    for r in result {
+                                        output.push_str(format!("{},",r).as_str())
+                                    }
+                                    output.pop();
+                                    println!("{}", output);
+                                }
+                            }
+                        },
+                        Err(e) => {println!("Failed reading the file at {}, with {}", text_path.to_str().unwrap_or("?"), e)}
+                    }
+                },
+                Err(e)=>{
+                    println!("Failed loading the model at {}, with: {}", model_path.to_str().unwrap_or("?"), e);
+                }
+            }
+        },
+        Ok(CLICommand::Train(text_path, output_path)) => {
+            match fs::read_to_string(&text_path){
+                Ok(text) => {
+                    let result = BasicTokenizer::train(&text, 512, Some(true));
+                    match output_path {
+                        Some(output_p) => {
+                            result.save(&output_p);
+                        },
+                        None => {
+                            println!("{}", result.save_str());
+                        }
+                    }
+                },
+                Err(e) => {println!("Failed reading file at {}, with {}", text_path.to_str().unwrap_or("?"), e)}
+            }
 
-    //TODO: use
-    let not_exit = true;
-    while not_exit{
-        get_cmd(&stdin, model.clone())
+        },
+        Ok(CLICommand::REPL()) => {
+            println!("repl usage: \n\t{}", usage());
+        
+            let model:Rc<RefCell<Option<BasicTokenizer>>> = Rc::new(RefCell::new(Option::None));
+            let stdin = stdin();
+        
+            //TODO: use
+            let not_exit = true;
+            while not_exit{
+                get_cmd(&stdin, model.clone())
+            }
+        },
+        Err(e) => {
+            println!("Failed parsing CLI command with: {}\n{}", e, cli_usage());
+        }
     }
+
 
 }
 
@@ -305,6 +498,15 @@ fn usage() -> String {
     \t[l|ld|load] ./path.model (in)
     \t[s|sv|save] ./path.model (out)
     \t[p|pr|print]".to_string();
+}
+
+fn cli_usage() -> String {
+    return "cli usage:
+    \t./app [-e|e|enc|encode] ./path.txt ./path.model ./path.ids(default stdout)
+    \t./app [-d|d|dec|decode] ./path.ids ./path.model ./path.txt(default stdout)
+    \t./app [-t|t|tr|train] ./path.txt ./path.model(default stdout)
+    \t./app -> REPL mode
+    ".to_string();
 }
 
 fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
@@ -320,7 +522,7 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
                     if let Ok(text) = fs::read_to_string(&path) {
                         let ids: Result<Vec<u32>, String> = text.split(',').map(|number|match number.parse::<u32>(){
                             Ok(o) => {return Ok(o)},
-                            Err(err) => {Err(format!("Couldn't parse the file for ids. Expected format is comma seperated numbers: 1,2,3,4,... instead got: {}", number))},
+                            Err(err) => {Err(format!("Couldn't parse the file for ids with err: {}. Expected format is comma seperated numbers: 1,2,3,4,... instead got: {}", err, number))},
                         }).collect();
                         match ids {
                             Ok(o) => {
@@ -350,7 +552,8 @@ fn get_cmd(stdin:&Stdin, mut model:Rc<RefCell<Option<BasicTokenizer>>>){
                         println!("result:\n\t{:?}",result);
                     } else {
                         print!("Couldn't read file at {:?}", path);  
-                    }                }
+                    }                
+                }
                 None => {
                     println!("Model is not initialized, train or load first")
                 }
@@ -465,4 +668,13 @@ enum REPLCommand  {
     Print(),
     Save(PathBuf),
     Load(PathBuf)
+}
+
+enum CLICommand {
+    //     text   , model  , output
+    Encode(PathBuf, PathBuf, Option<PathBuf>),
+    Decode(PathBuf, PathBuf, Option<PathBuf>),
+    //    text   , output
+    Train(PathBuf, Option<PathBuf>),
+    REPL()
 }

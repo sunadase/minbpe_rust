@@ -14,9 +14,12 @@ made in order to practice rust i wouldnt imagine it to be following best practic
     - [x] save
     - [x] load
     - [x] vocab type shud be vec u32?
+    - [ ] encode different from minbpe? 
  - [x] REPL <- (next)
     - [ ] correct prints/whitespaces
- - [ ] CLI
+    - [ ] take train model params
+ - [x] CLI
+    - [ ] take train model params
  - [ ] Validate results <- (next)
  - [ ] Set-up Tests <- (next)
     - [ ] self
